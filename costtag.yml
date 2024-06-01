@@ -1,0 +1,139 @@
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Lambda
+        Parameters:
+          - LambdaCloudWatchLogsName
+          - LambdaIAMRoleName
+          - LambdaIAMPolicyName
+          - LambdaName
+      - Label:
+          default: EventBridge
+        Parameters:
+          - EventBridgeIAMRoleName
+          - EventBridgeIAMPolicyName
+          - EventBridgeScheduleName
+          - ScheduleStartTime
+          - ScheduleTimezone
+
+
+Parameters:
+  LambdaCloudWatchLogsName:
+    Type: String
+    Default: "EnableCostAllocationTags-Lambda-Logs"
+  LambdaIAMRoleName:
+    Type: String
+    Default: "EnableCostAllocationTags-Lambda-Role"
+  LambdaIAMPolicyName:
+    Type: String
+    Default: "EnableCostAllocationTags-Lambda-Policy"
+  LambdaName:
+    Type: String
+    Default: "EnableCostAllocationTags-Lambda"
+
+  EventBridgeIAMRoleName:
+    Type: String
+    Default: "EnableCostAllocationTags-EventBridge-Role"
+  EventBridgeIAMPolicyName:
+    Type: String
+    Default: "EnableCostAllocationTags-EventBridge-Policy"
+  EventBridgeScheduleName:
+    Type: String
+    Default: "EnableCostAllocationTags-Schedule"
+  # The backfill for cost allocation tags can only be executed once every 24 hours
+  ScheduleStartTime:
+    Type: String
+    Default: "rate(2 days)"
+  ScheduleTimezone:
+    Type: String
+    Default: "Asia/Tokyo"
+
+
+Resources: 
+  LambdaCloudWatchLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref LambdaCloudWatchLogsName
+      RetentionInDays: 1
+  LambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref LambdaIAMRoleName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Ref LambdaIAMPolicyName
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "ce:*"
+                  - "logs:*"
+                Resource:
+                  - "*"
+  Lambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LambdaName
+      Handler: "index.lambda_handler"
+      Role: !GetAtt LambdaIAMRole.Arn
+      Runtime: "python3.12"
+      Timeout: 900
+      LoggingConfig:
+        LogGroup: !Ref LambdaCloudWatchLogs
+      Code:
+        ZipFile: |
+          import boto3
+          ec2_client = boto3.client("ec2")
+          def lambda_handler(event, context):
+              try:
+                  action = event["action"]
+                  ec2_ids = ec2_describe(action)
+                  if ec2_ids:
+                      if action == "start":
+                          ec2_start(ec2_ids)
+                      elif action == "stop":
+                          ec2_stop(ec2_ids)
+              except:
+                  print("lambda_handlerにて、エラーが発生しました")
+
+  EventBridgeIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref EventBridgeIAMRoleName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "scheduler.amazonaws.com"
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Ref EventBridgeIAMPolicyName
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "lambda:InvokeFunction"
+                Resource:
+                  - !GetAtt Lambda.Arn
+  EventBridgeSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Name: !Ref EventBridgeScheduleName
+      ScheduleExpression: !Ref ScheduleStartTime
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      State: "ENABLED"
+      Target: 
+        Arn: !GetAtt Lambda.Arn
+        RoleArn: !GetAtt EventBridgeIAMRole.Arn
