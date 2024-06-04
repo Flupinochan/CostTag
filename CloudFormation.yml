@@ -8,6 +8,7 @@ Metadata:
           - LambdaIAMRoleName
           - LambdaIAMPolicyName
           - LambdaName
+          - LambdaLayerArn
       - Label:
           default: EventBridge
         Parameters:
@@ -31,6 +32,9 @@ Parameters:
   LambdaName:
     Type: String
     Default: "EnableCostAllocationTags-Lambda"
+  LambdaLayerArn:
+    Type: String
+    Default: "arn:aws:lambda:ap-northeast-1:770693421928:layer:Klayers-p312-boto3:6"
 
   EventBridgeIAMRoleName:
     Type: String
@@ -88,21 +92,58 @@ Resources:
       Timeout: 900
       LoggingConfig:
         LogGroup: !Ref LambdaCloudWatchLogs
+      Layers: 
+        - !Ref LambdaLayerArn
       Code:
         ZipFile: |
+          from datetime import datetime, timedelta
+          import time
           import boto3
-          ec2_client = boto3.client("ec2")
+          ce_client = boto3.client("ce")
           def lambda_handler(event, context):
               try:
-                  action = event["action"]
-                  ec2_ids = ec2_describe(action)
-                  if ec2_ids:
-                      if action == "start":
-                          ec2_start(ec2_ids)
-                      elif action == "stop":
-                          ec2_stop(ec2_ids)
-              except:
-                  print("lambda_handlerにて、エラーが発生しました")
+                  # List inactive tags
+                  tag_list = []
+                  response = ce_client.list_cost_allocation_tags(
+                      Status="Inactive",
+                      MaxResults=10,
+                  )
+                  tag_list.extend([tag["TagKey"] for tag in response["CostAllocationTags"]])
+                  while "NextToken" in response:
+                      response = ce_client.list_cost_allocation_tags(
+                          Status="Inactive",
+                          MaxResults=10,
+                          NextToken=response["NextToken"],
+                      )
+                      tag_list.extend([tag["TagKey"] for tag in response["CostAllocationTags"]])
+                  print(f"The following tags are inactive: {tag_list}")
+                  print(f"Activate 【{len(tag_list)}】tags as cost allocation tags.")
+                  # Activate tags as cost allocation tags
+                  if len(tag_list) > 0:
+                      for tag in tag_list:
+                          response = ce_client.update_cost_allocation_tags_status(
+                              CostAllocationTagsStatus=[
+                                  {
+                                      "TagKey": tag,
+                                      "Status": "Active",
+                                  },
+                              ]
+                          )
+                          # Caution LimitExceededException
+                          time.sleep(1)
+                      print(f"Cost allocation tag activation processing completed.")
+                  # Start Backfill
+                  # The version of boto3 must be 1.34.71 or higher
+                  today = datetime.now()
+                  one_year_ago = (today.replace(day=1) - timedelta(days=365)).replace(day=1)
+                  one_year_ago = one_year_ago.strftime("%Y-%m-%dT00:00:00Z")
+                  print(f"Start backfill from {one_year_ago}")
+                  response = ce_client.start_cost_allocation_tag_backfill(
+                      BackfillFrom=one_year_ago,
+                  )
+              except Exception as e:
+                  print(f"An error has occurred: {e}")
+
 
   EventBridgeIAMRole:
     Type: AWS::IAM::Role

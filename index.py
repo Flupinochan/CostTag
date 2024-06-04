@@ -2,7 +2,6 @@ from datetime import datetime, timedelta
 import time
 import boto3
 
-
 ce_client = boto3.client("ce")
 
 
@@ -42,10 +41,11 @@ def lambda_handler(event, context):
             print(f"Cost allocation tag activation processing completed.")
 
         # Start Backfill
+        # The version of boto3 must be 1.34.71 or higher
         today = datetime.now()
-        one_year_ago = today - timedelta(days=365)
-        one_year_ago = one_year_ago.strftime("%Y-%m-%d")
-        print(f"Start backfill from {one_year_ago}.")
+        one_year_ago = (today.replace(day=1) - timedelta(days=365)).replace(day=1)
+        one_year_ago = one_year_ago.strftime("%Y-%m-%dT00:00:00Z")
+        print(f"Start backfill from {one_year_ago}")
         response = ce_client.start_cost_allocation_tag_backfill(
             BackfillFrom=one_year_ago,
         )
